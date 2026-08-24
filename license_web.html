@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Cursor Sand 密钥生成器</title>
+<style>
+  :root { --bg:#0D1117; --card:#161B22; --field:#0B0F16; --border:#232B36; --border-hi:#323C4B;
+          --text:#E6EDF3; --dim:#AEB9C7; --muted:#7D8899; --accent:#4C8DFF; --ok:#3FD07A;
+          --warn:#E3B341; --danger:#FF6B63; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--text); font:14px/1.6 "Microsoft YaHei UI","Segoe UI",sans-serif; padding:32px; }
+  .wrap { max-width:860px; margin:0 auto; }
+  h1 { font-size:22px; margin-bottom:4px; }
+  .sub { color:var(--muted); margin-bottom:24px; font-size:13px; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:14px; padding:20px 22px; margin-bottom:16px; }
+  .card h2 { font-size:15px; margin-bottom:12px; }
+  label { display:block; color:var(--dim); font-size:13px; margin:12px 0 5px; }
+  input, select, textarea { width:100%; background:var(--field); color:var(--text); border:1px solid var(--border);
+    border-radius:8px; padding:9px 11px; font:13px/1.5 Consolas,monospace; outline:none; }
+  input:focus, textarea:focus { border-color:var(--accent); }
+  .row { display:flex; gap:14px; } .row > div { flex:1; }
+  textarea#pem { min-height:120px; resize:vertical; }
+  textarea#out { min-height:110px; resize:vertical; background:#0B0F16; color:var(--ok); }
+  .btn { background:var(--accent); color:#fff; border:none; border-radius:9px; padding:10px 22px; font-size:14px;
+    cursor:pointer; font-weight:bold; margin-top:14px; }
+  .btn:hover { filter:brightness(1.1); }
+  .btn.ghost { background:var(--field); color:var(--text); border:1px solid var(--border-hi); font-weight:normal; }
+  .info { background:#101E33; border:1px solid #1F3C68; border-radius:8px; padding:10px 12px; color:#9CC3FF; font-size:12.5px; margin-top:10px; }
+  .ok { color:var(--ok); } .warn { color:var(--warn); } .danger { color:var(--danger); }
+  .copybtn { float:right; }
+  .keyid { color:var(--muted); font-size:12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Cursor Sand 密钥生成器 <span class="keyid">(本地生成 · 私钥不出本机)</span></h1>
+  <div class="sub">用 Ed25519 私钥签发带到期日期的授权密钥（SANDLIC1 token）。生成后把密钥发给用户，软件启动时校验，过期自动锁定。</div>
+
+  <div class="card">
+    <h2>1. 私钥</h2>
+    <label>粘贴私钥 PEM（PKCS8，即 private_ed25519.pem 内容）或选择文件</label>
+    <textarea id="pem" placeholder="-----BEGIN PRIVATE KEY-----&#10;...&#10;-----END PRIVATE KEY-----"></textarea>
+    <input type="file" id="pemFile" accept=".pem,.key,.txt" style="margin-top:8px; display:none">
+    <button class="btn ghost" onclick="document.getElementById('pemFile').click()">从文件加载私钥</button>
+    <button class="btn ghost" onclick="loadSample()">加载示例私钥(测试用)</button>
+  </div>
+
+  <div class="card">
+    <h2>2. 授权信息</h2>
+    <div class="row">
+      <div><label>客户名 / 备注</label><input id="customer" value="Tasha" placeholder="客户名"></div>
+      <div><label>产品标识</label><input id="product" value="cursor-sand-tool"></div>
+    </div>
+    <div class="row">
+      <div><label>到期日期（本地时间）</label><input type="date" id="expDate"></div>
+      <div><label>或有效期（天，留空用日期）</label><input id="days" type="number" min="1" placeholder="如 30"></div>
+    </div>
+    <div class="row">
+      <div><label>离线宽限（天）</label><input id="grace" type="number" min="0" value="0"></div>
+      <div><label>设备绑定（可选，留空不绑定）</label><input id="deviceFp" placeholder="设备指纹 sha256"></div>
+    </div>
+    <button class="btn" id="genBtn" onclick="generate()">生成密钥</button>
+    <div class="info">点击生成后，把下方密钥发给客户。客户在软件里粘贴该密钥即可激活。</div>
+  </div>
+
+  <div class="card">
+    <h2>3. 生成的密钥 <button class="btn ghost copybtn" onclick="copyOut()">复制</button></h2>
+    <textarea id="out" readonly placeholder="SANDLIC1.&lt;payload&gt;.&lt;signature&gt;"></textarea>
+    <div id="status"></div>
+  </div>
+</div>
+
+<script>
+"use strict";
+const b64u = {
+  enc(raw){ let s = btoa(String.fromCharCode(...raw)); return s.replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,""); },
+  dec(t){ t = t.replace(/-/g,"+").replace(/_/g,"/"); while(t.length%4) t += "="; const b = atob(t);
+    return Uint8Array.from(b, c => c.charCodeAt(0)); }
+};
+function canonical(obj){ // 与服务端 crypto.canonical_json 一致：排序键、紧凑、无空格
+  return new TextEncoder().encode(JSON.stringify(obj, Object.keys(obj).sort()));
+}
+function pemToDer(pem){
+  const body = pem.replace(/-----BEGIN [^-]+-----/,"").replace(/-----END [^-]+-----/,"").replace(/\s+/g,"");
+  return b64u.dec(body);
+}
+function parseExp(){
+  const dateVal = document.getElementById("expDate").value;
+  const daysVal = parseInt(document.getElementById("days").value, 10);
+  let exp;
+  if (dateVal) { exp = new Date(dateVal + "T23:59:59").getTime()/1000; }
+  else if (daysVal && daysVal > 0) { exp = Math.floor(Date.now()/1000) + daysVal*86400; }
+  else { exp = Math.floor(Date.now()/1000) + 30*86400; }
+  return Math.floor(exp);
+}
+async function generate(){
+  const status = document.getElementById("status");
+  const pem = document.getElementById("pem").value.trim();
+  if (!pem) { status.className = "warn"; status.textContent = "请先粘贴私钥 PEM"; return; }
+  let der;
+  try { der = pemToDer(pem); } catch(e){ status.className = "warn"; status.textContent = "私钥格式错误: " + e.message; return; }
+
+  let key;
+  try {
+    key = await crypto.subtle.importKey("pkcs8", der, { name: "Ed25519" }, false, ["sign"]);
+  } catch(e){
+    status.className = "warn";
+    status.textContent = "导入私钥失败（请用 Edge / Chrome 打开本页面）: " + e.message;
+    return;
+  }
+
+  const now = Math.floor(Date.now()/1000);
+  const payload = {
+    alg: "Ed25519",
+    key_id: "k1",
+    product: document.getElementById("product").value.trim() || "cursor-sand-tool",
+    customer: document.getElementById("customer").value.trim() || "",
+    device_fp: document.getElementById("deviceFp").value.trim() || "",
+    iat: now,
+    exp: parseExp(),
+    grace_days: parseInt(document.getElementById("grace").value, 10) || 0
+  };
+  const msg = canonical(payload);
+  const sig = await crypto.subtle.sign("Ed25519", key, msg);
+  const token = "SANDLIC1." + b64u.enc(msg) + "." + b64u.enc(new Uint8Array(sig));
+  document.getElementById("out").value = token;
+
+  const d = new Date(payload.exp*1000);
+  status.className = "ok";
+  status.textContent = `生成成功 · 到期: ${d.toLocaleString()} · 客户: ${payload.customer || "(未填)"} · 密钥长度 ${token.length} 字符`;
+}
+function copyOut(){
+  const v = document.getElementById("out").value;
+  if (!v) return;
+  navigator.clipboard.writeText(v).then(()=>{
+    const st = document.getElementById("status"); st.className = "ok"; st.textContent = "已复制到剪贴板";
+  }).catch(()=>{
+    document.getElementById("out").select(); document.execCommand("copy");
+    const st = document.getElementById("status"); st.className = "ok"; st.textContent = "已复制（手动 Ctrl+C）";
+  });
+}
+function loadSample(){
+  // 测试用私钥：与 license-server/keys/private_ed25519.pem 相同
+  document.getElementById("pem").value = "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIJn9NwX2eTr0cM0N7hYw0m7QKQ4Z7WbG0Q4dFQH3uDn6\n-----END PRIVATE KEY-----";
+}
+document.getElementById("pemFile").addEventListener("change", ev => {
+  const f = ev.target.files[0]; if (!f) return;
+  const rd = new FileReader();
+  rd.onload = () => document.getElementById("pem").value = rd.result;
+  rd.readAsText(f);
+});
+// 默认到期日期 = 30 天后
+(function(){
+  const d = new Date(Date.now() + 30*86400000);
+  document.getElementById("expDate").value = d.toISOString().slice(0,10);
+})();
+</script>
+</body>
+</html>
