@@ -67,5 +67,6 @@ jobs:
           name: CursorSandTool-${{ matrix.arch }}
           path: |
             dist/CursorSandTool-${{ matrix.arch }}
+            dist/CursorSandTool-${{ matrix.arch }}.app
             dist/CursorSandTool-${{ matrix.arch }}.zip
           if-no-files-found: error
