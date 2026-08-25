@@ -129,8 +129,8 @@ def clear_key() -> None:
 # --------------------------------------------------------------------------- #
 # tkinter 激活对话框（无 tk 环境时降级为控制台）
 # --------------------------------------------------------------------------- #
-def show_activation_dialog(parent) -> str | None:
-    """弹窗让用户粘贴密钥；返回有效 token 或 None。"""
+def show_activation_dialog(parent, hint: str = "") -> str | None:
+    """弹窗让用户粘贴密钥；返回有效 token 或 None（用户点退出）。"""
     try:
         import tkinter as tk
         from tkinter import ttk
@@ -148,7 +148,7 @@ def show_activation_dialog(parent) -> str | None:
 
     tk.Label(outer, text="激活 Cursor SAND 工具", font=("Microsoft YaHei UI", 14, "bold"),
              fg="#1F2328", bg="#F5F6FA").pack(anchor="w")
-    tk.Label(outer, text="请输入授权密钥（由 license_web.html 生成，含到期日期）：",
+    tk.Label(outer, text=hint or "请输入授权密钥（由 license_web.html 生成，含到期日期）：",
              font=("Microsoft YaHei UI", 10), fg="#57606A", bg="#F5F6FA",
              justify="left", wraplength=430).pack(anchor="w", pady=(6, 10))
 
@@ -246,7 +246,10 @@ def show_welcome(parent, state: LicenseState) -> None:
 # 总入口：启动时调用
 # --------------------------------------------------------------------------- #
 def check_and_gate(parent) -> LicenseState:
-    """启动授权检查。未激活 -> 弹激活框；无效/过期 -> 拦截退出；有效 -> 返回状态。"""
+    """启动授权检查。未激活/无效/过期 -> 都弹激活框（可重新输入新码）；有效 -> 返回状态。
+
+    用户点"退出"或输入的新码仍无效时 -> 拦截退出（软件打不开）。
+    """
     token = load_key()
     if not token:
         state = LicenseState(False, "尚未激活", "NO_LICENSE")
@@ -256,23 +259,25 @@ def check_and_gate(parent) -> LicenseState:
     if state.allowed:
         return state
 
-    # 未激活 / 无效：弹激活框重试一次（也可在激活框内继续输入）
-    if state.code == "NO_LICENSE" or state.code == "TOKEN_INVALID":
-        new_token = show_activation_dialog(parent)
-        if new_token:
-            retry = evaluate_token(new_token)
-            if retry.allowed:
-                save_key(new_token)
-                return retry
-    # 过期或仍未通过 -> 锁定退出
+    # 任何原因（未激活 / 无效 / 已过期）都给一次重新输入新码的机会
     if state.code == "LICENSE_EXPIRED":
-        show_blocked(parent, state)
+        hint = "原授权已过期，请输入新的授权码（覆盖旧码）。"
+    elif state.code == "TOKEN_INVALID":
+        hint = "当前授权码无效，请重新输入正确的授权码。"
     else:
-        final = evaluate_token(load_key()) if load_key() else state
-        if not final.allowed:
-            show_blocked(parent, final)
-        else:
-            return final
+        hint = "请输入授权密钥（由 license_web.html 生成，含到期日期）："
+
+    new_token = show_activation_dialog(parent, hint=hint)
+    if new_token:
+        retry = evaluate_token(new_token)
+        if retry.allowed:
+            save_key(new_token)
+            return retry
+        # 新码也无效/过期：再弹一次提示，用户可关闭窗口退出
+        show_blocked(parent, retry)
+    else:
+        # 用户点了"退出"：拦截
+        show_blocked(parent, state)
     raise SystemExit(0)
 
 
